@@ -45,7 +45,7 @@ void EnforceNodeDeprecation(int nHeight, bool forceLogging) {
         } else {
             msg = strprintf(_("This version will be deprecated at block height %d, and will automatically shut down."),
                             DEPRECATION_HEIGHT) + " " +
-                  _("You should upgrade to the latest version of Zcash.") + " " +
+                  _("You should upgrade to the latest version of ZenCash.") + " " +
                   strprintf(_("To disable deprecation for this version, set %s%s."),
                             "-disabledeprecation=", CLIENT_VERSION_STR);
         }
