@@ -105,8 +105,9 @@ static void CheckBlockIndex();
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;
-
-const string strMessageMagic = "Zcash Signed Message:\n";
+// ZEN_MOD_START
+const string strMessageMagic = "Zen Signed Message:\n";
+// ZEN_MOD_END
 
 // Internal stuff
 namespace {
@@ -2069,8 +2070,10 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
 static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
 
 void ThreadScriptCheck() {
-    RenameThread("zcash-scriptch");
+    // ZEN_MOD_START
+    RenameThread("zen-scriptch");
     scriptcheckqueue.Thread();
+    // ZEN_MOD_END
 }
 
 //
