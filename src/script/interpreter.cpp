@@ -5,9 +5,7 @@
 
 #include "interpreter.h"
 
-// ZEN_MOD_START
 #include "chain.h"
-// ZEN_MOD_END
 #include "primitives/transaction.h"
 #include "crypto/ripemd160.h"
 #include "crypto/sha1.h"
@@ -15,12 +13,10 @@
 #include "pubkey.h"
 #include "script/script.h"
 #include "uint256.h"
-// ZEN_MOD_START
 #include "util.h"
 #include "main.h"
 #include <boost/algorithm/hex.hpp>
 #include <boost/algorithm/string.hpp>
-// ZEN_MOD_END
 
 using namespace std;
 
@@ -385,13 +381,12 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     break;
                 }
 
-// ZEN_MOD_START
                 case OP_CHECKBLOCKATHEIGHT:
                 {
                     if (!(flags & SCRIPT_VERIFY_CHECKBLOCKATHEIGHT)) {
                         // At least check that there are 2 parameters
                         if (stack.size() < 2) {
-                            LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Wrong parameters amount.", __FILE__, __func__);
+                            LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Wrong parameters amount.\n", __FILE__, __func__);
                             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                         }
                         // Clear stack
@@ -401,7 +396,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     }
 
                     if (stack.size() < 2) {
-                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Wrong parameters amount.", __FILE__, __func__);
+                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Wrong parameters amount.\n", __FILE__, __func__);
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
 
@@ -410,7 +405,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
                     if ((vchBlockIndex.size() > sizeof(int)) || (vchBlockHash.size() > 32))
                     {
-                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Bad params.", __FILE__, __func__);
+                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Bad params.\n", __FILE__, __func__);
                         return set_error(serror, SCRIPT_ERR_CHECKBLOCKATHEIGHT);
                     }
 
@@ -421,7 +416,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     if (nHeight < 0 || !checker.CheckBlockHash(nHeight, vchBlockHash)) {
                         // Not final rather than a hard reject to avoid caching across different blockchains
                         // Also because it will *eventually* become final when the height gets old enough
-                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Referenced height: %d", __FILE__, __func__, nHeight);
+                        LogPrintf("%s: %s: OP_CHECKBLOCKATHEIGHT verification failed. Referenced height: %d\n", __FILE__, __func__, nHeight);
                         return set_error(serror, SCRIPT_ERR_NOT_FINAL);
                     }
 
@@ -433,7 +428,6 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
 
                 case OP_NOP1: case OP_NOP3: case OP_NOP4:
-// ZEN_MOD_END
                 case OP_NOP6: case OP_NOP7: case OP_NOP8: case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
@@ -1089,14 +1083,15 @@ public:
         ::Serialize(s, txTo.nLockTime, nType, nVersion);
 
         // Serialize vjoinsplit
-        if (txTo.nVersion >= 2) {
+        if (txTo.nVersion >= PHGR_TX_VERSION || txTo.nVersion == GROTH_TX_VERSION) {
             //
             // SIGHASH_* functions will hash portions of
             // the transaction for use in signatures. This
             // keeps the JoinSplit cryptographically bound
             // to the transaction.
             //
-            ::Serialize(s, txTo.vjoinsplit, nType, nVersion);
+        	auto os = WithTxVersion(&s, txTo.nVersion);
+        	::Serialize(os, txTo.vjoinsplit, nType, nVersion);
             if (txTo.vjoinsplit.size() > 0) {
                 ::Serialize(s, txTo.joinSplitPubKey, nType, nVersion);
 
@@ -1126,6 +1121,7 @@ uint256 SignatureHash(const CScript& scriptCode, const CTransaction& txTo, unsig
 
     // Wrapper to serialize only the necessary parts of the transaction being signed
     CTransactionSignatureSerializer txTmp(txTo, scriptCode, nIn, nHashType);
+
 
     // Serialize and hash
     CHashWriter ss(SER_GETHASH, 0);
@@ -1200,7 +1196,6 @@ bool TransactionSignatureChecker::CheckLockTime(const CScriptNum& nLockTime) con
     return true;
 }
 
-// ZEN_MOD_START
 bool TransactionSignatureChecker::CheckBlockHash(const int32_t nHeight, const std::vector<unsigned char>& vchCompareTo) const
 {
     if (!chain) {
@@ -1227,7 +1222,6 @@ bool TransactionSignatureChecker::CheckBlockHash(const int32_t nHeight, const st
 
     return (vchCompareTo == vchBlockHash);
 }
-// ZEN_MOD_END
 
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
 {

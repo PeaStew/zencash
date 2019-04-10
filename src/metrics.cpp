@@ -16,14 +16,16 @@
 #include <boost/thread.hpp>
 #include <boost/thread/synchronized_value.hpp>
 #include <string>
+#ifdef WIN32
+#include <io.h>
+#else
 #include <sys/ioctl.h>
+#endif
 #include <unistd.h>
 
-// ZEN_MOD_START
 #include "zen/forkmanager.h"
 
 using namespace zen;
-// ZEN_MOD_END
 
 void AtomicTimer::start()
 {
@@ -203,7 +205,6 @@ void ConnectMetricsScreen()
 int printStats(bool mining)
 {
     // Number of lines that are always displayed
-// ZEN_MOD_START
     int lines = 5;
 
     int height = chainActive.Height();
@@ -246,10 +247,8 @@ int printStats(bool mining)
         }
     }
 */
-// ZEN_MOD_END
     auto localsolps = GetLocalSolPS();
 
-// ZEN_MOD_START
 /*
     std::cout << "          " << _("COMSEC STATUS") << " | " << securitylevel << std::endl;
     std::cout << "      " << _("Encryption Cipher") << " | " << cipherdescription << std::endl;
@@ -259,7 +258,6 @@ int printStats(bool mining)
 */
     std::cout << "           " << _("Block height") << " | " << height << std::endl;
     std::cout << "            " << _("Connections") << " | " << connections << " (TLS: " << tlsConnections << ")" << std::endl;
-// ZEN_MOD_END
     std::cout << "  " << _("Network solution rate") << " | " << netsolps << " Sol/s" << std::endl;
     if (mining && miningTimer.running()) {
         std::cout << "    " << _("Local solution rate") << " | " << strprintf("%.4f Sol/s", localsolps) << std::endl;
@@ -299,9 +297,7 @@ int printMiningStatus(bool mining)
         lines++;
     } else {
         std::cout << _("You are currently not mining.") << std::endl;
-        // ZEN_MOD_START
         std::cout << _("To enable mining, add 'gen=1' to your zen.conf and restart.") << std::endl;
-        // ZEN_MOD_END
         lines += 2;
     }
     std::cout << std::endl;
@@ -369,14 +365,12 @@ int printMetrics(size_t cols, bool mining)
                 if (mapBlockIndex.count(hash) > 0 &&
                         chainActive.Contains(mapBlockIndex[hash])) {
                     int height = mapBlockIndex[hash]->nHeight;
-// ZEN_MOD_START
                     CAmount reward = GetBlockSubsidy(height, consensusParams);
                     CAmount subsidy = reward;
                     for (Fork::CommunityFundType cfType=Fork::CommunityFundType::FOUNDATION; cfType < Fork::CommunityFundType::ENDTYPE; cfType = Fork::CommunityFundType(cfType + 1)) {
                         CAmount communityFundAmount = ForkManager::getInstance().getCommunityFundReward(height,reward, cfType);
                         subsidy -= communityFundAmount;
                     }
-// ZEN_MOD_END
                     if (std::max(0, COINBASE_MATURITY - (tipHeight - height)) > 0) {
                         immature += subsidy;
                     } else {
@@ -456,11 +450,34 @@ int printInitMessage()
 
     return 2;
 }
+#ifdef WIN32
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+
+bool enableVTMode()
+{
+    // Set output mode to handle virtual terminal sequences
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hOut, &dwMode)) {
+        return false;
+    }
+
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    if (!SetConsoleMode(hOut, dwMode)) {
+        return false;
+    }
+    return true;
+}
+#endif
 
 void ThreadShowMetricsScreen()
 {
     // Make this thread recognisable as the metrics screen thread
-    RenameThread("zcash-metrics-screen");
+    RenameThread("horizen-metrics-screen");
 
     // Determine whether we should render a persistent UI or rolling metrics
     bool isTTY = isatty(STDOUT_FILENO);
@@ -468,6 +485,9 @@ void ThreadShowMetricsScreen()
     int64_t nRefresh = GetArg("-metricsrefreshtime", isTTY ? 1 : 600);
 
     if (isScreen) {
+#ifdef WIN32
+        enableVTMode();
+#endif
         // Clear screen
         std::cout << "\e[2J";
 
@@ -476,7 +496,6 @@ void ThreadShowMetricsScreen()
         std::cout << std::endl;
 
         // Thank you text
-// ZEN_MOD_START
         std::cout << _("Zen is economic freedom. Thanks for running a node.") << std::endl;
         std::cout << _("仕方が無い") << std::endl;
         std::cout << _("Shikata ga nai.") << std::endl;
@@ -484,7 +503,6 @@ void ThreadShowMetricsScreen()
 
         // Privacy notice text
         std::cout << PrivacyInfo();
-// ZEN_MOD_END
         std::cout << std::endl;
     }
 
@@ -495,11 +513,17 @@ void ThreadShowMetricsScreen()
 
         // Get current window size
         if (isTTY) {
+#ifdef WIN32
+            CONSOLE_SCREEN_BUFFER_INFO csbi;
+            GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+            cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+#else
             struct winsize w;
             w.ws_col = 0;
             if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) != -1 && w.ws_col != 0) {
                 cols = w.ws_col;
             }
+#endif
         }
 
         if (isScreen) {
@@ -524,7 +548,14 @@ void ThreadShowMetricsScreen()
 
         if (isScreen) {
             // Explain how to exit
-            std::cout << "[" << _("Press Ctrl+C to exit") << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
+            //std::cout << "[" << _("Press Ctrl+C to exit") << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
+            std::cout << "[";
+#ifdef WIN32
+            std::cout << _("'zcash-cli.exe stop' to exit");
+#else
+            std::cout << _("Press Ctrl+C to exit");
+#endif
+            std::cout << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
         } else {
             // Print delineator
             std::cout << "----------------------------------------" << std::endl;

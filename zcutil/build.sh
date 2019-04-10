@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 set -eu -o pipefail
 
 function cmd_pref() {
@@ -33,12 +32,9 @@ if [[ -z "${HOST-}" ]]; then
     HOST="$BUILD"
 fi
 
-# Allow override to $CC and $CXX for porters. Most users will not need it.
-if [[ -z "${CC-}" ]]; then
-    CC=gcc
-fi
-if [[ -z "${CXX-}" ]]; then
-    CXX=g++
+# Allow users to set arbitrary compile flags. Most users will not need this.
+if [[ -z "${CONFIGURE_FLAGS-}" ]]; then
+    CONFIGURE_FLAGS=""
 fi
 
 if [ "x$*" = 'x--help' ]
@@ -49,7 +45,6 @@ Usage:
 $0 --help
   Show this help message and exit.
 
-# ZEN_MOD_START
 $0 [ --enable-lcov || --disable-tests ] [ --disable-mining ] [ --disable-rust ] [ --enable-proton ] [ --disable-libs ] [ MAKEARGS... ]
     Build Zen and most of its transitive dependencies from
     source. MAKEARGS are applied to both dependencies and Zen itself.
@@ -71,7 +66,6 @@ $0 [ --enable-lcov || --disable-tests ] [ --disable-mining ] [ --disable-rust ] 
   If --disable-libs is passed, Zen is configured to not build any libraries like
   'libzcashconsensus'.
 EOF
-# ZEN_MOD_END
     exit 0
 fi
 
@@ -100,14 +94,6 @@ then
     shift
 fi
 
-# If --disable-rust is the next argument, disable Rust code:
-RUST_ARG=''
-if [ "x${1:-}" = 'x--disable-rust' ]
-then
-    RUST_ARG='--enable-rust=no'
-    shift
-fi
-
 # If --enable-proton is the next argument, enable building Proton code:
 PROTON_ARG='--enable-proton=no'
 if [ "x${1:-}" = 'x--enable-proton' ]
@@ -116,33 +102,11 @@ then
     shift
 fi
 
-# If --disable-libs is the next argument, build without libs:
-LIBS_ARG=''
-if [ "x${1:-}" = 'x--disable-libs' ]
-then
-    LIBS_ARG='--without-libs'
-    shift
-fi
-
-PREFIX="$(pwd)/depends/$BUILD/"
-
 eval "$MAKE" --version
-eval "$CC" --version
-eval "$CXX" --version
 as --version
 ld -v
 
-# ZEN MOD START
-#echo '================================================'
-#echo "HOST=" "$HOST" "BUILD=" "$BUILD" "NO_RUST=" "$RUST_ARG"
-#echo "$MAKE" "$@" "-C ./depends/ V=1"
-#echo '================================================'
-# ZEN MOD END
-
-HOST="$HOST" BUILD="$BUILD" NO_RUST="$RUST_ARG" NO_PROTON="$PROTON_ARG" "$MAKE" "$@" -C ./depends/ V=1
+HOST="$HOST" BUILD="$BUILD" NO_PROTON="$PROTON_ARG" "$MAKE" "$@" -C ./depends/ V=1
 ./autogen.sh
-# ZEN_MOD_START
-# CC="$CC" CXX="$CXX" ./configure --prefix="${PREFIX}" --host="$HOST" --build="$BUILD" "$RUST_ARG" "$HARDENING_ARG" "$LCOV_ARG" "$TEST_ARG" "$MINING_ARG" "$PROTON_ARG" "$LIBS_ARG" --enable-werror CXXFLAGS='-fwrapv -fno-strict-aliasing -Wno-builtin-declaration-mismatch -Werror -g'
-# ZEN_MOD_END
-CC="$CC" CXX="$CXX" ./configure --prefix="${PREFIX}" --host="$HOST" --build="$BUILD" "$RUST_ARG" "$HARDENING_ARG" "$LCOV_ARG" "$TEST_ARG" "$MINING_ARG" "$PROTON_ARG" "$LIBS_ARG" --enable-werror  CXXFLAGS='-g'
+CONFIG_SITE="$PWD/depends/$HOST/share/config.site" ./configure  "$HARDENING_ARG" "$LCOV_ARG" "$TEST_ARG" "$MINING_ARG" "$PROTON_ARG" $CONFIGURE_FLAGS CXXFLAGS='-g'
 "$MAKE" "$@" V=1

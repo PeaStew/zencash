@@ -6,7 +6,7 @@
 
 extern ZCJoinSplit* params;
 
-extern bool ReceivedBlockTransactions(const CBlock &block, CValidationState& state, CBlockIndex *pindexNew, const CDiskBlockPos& pos);
+extern bool ReceivedBlockTransactions(const CBlock &block, CValidationState& state, CBlockIndex *pindexNew, const CDiskBlockPos& pos, BlockSet* sForkTips);
 
 void ExpectOptionalAmount(CAmount expected, boost::optional<CAmount> actual) {
     EXPECT_TRUE((bool)actual);
@@ -71,9 +71,7 @@ TEST(Validation, ContextualCheckInputsPassesWithCoinbase) {
     CCoinsViewCache view(&fakeDB);
 
     CValidationState state;
-// ZEN_MOD_START
     EXPECT_TRUE(ContextualCheckInputs(tx, state, view, false, chainActive, 0, false, Params(CBaseChainParams::MAIN).GetConsensus()));
-// ZEN_MOD_END
 }
 
 TEST(Validation, ReceivedBlockTransactions) {
@@ -112,7 +110,7 @@ TEST(Validation, ReceivedBlockTransactions) {
 
     // Mark the second block's transactions as received first
     CValidationState state;
-    EXPECT_TRUE(ReceivedBlockTransactions(block2, state, &fakeIndex2, pos2));
+    EXPECT_TRUE(ReceivedBlockTransactions(block2, state, &fakeIndex2, pos2, NULL));
     EXPECT_FALSE(fakeIndex1.IsValid(BLOCK_VALID_TRANSACTIONS));
     EXPECT_TRUE(fakeIndex2.IsValid(BLOCK_VALID_TRANSACTIONS));
 
@@ -127,7 +125,7 @@ TEST(Validation, ReceivedBlockTransactions) {
     EXPECT_FALSE((bool)fakeIndex2.nChainSproutValue);
 
     // Now mark the first block's transactions as received
-    EXPECT_TRUE(ReceivedBlockTransactions(block1, state, &fakeIndex1, pos1));
+    EXPECT_TRUE(ReceivedBlockTransactions(block1, state, &fakeIndex1, pos1, NULL));
     EXPECT_TRUE(fakeIndex1.IsValid(BLOCK_VALID_TRANSACTIONS));
     EXPECT_TRUE(fakeIndex2.IsValid(BLOCK_VALID_TRANSACTIONS));
 

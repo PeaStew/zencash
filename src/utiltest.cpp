@@ -4,9 +4,13 @@
 
 #include "utiltest.h"
 
-CWalletTx GetValidReceive(ZCJoinSplit& params,
-                          const libzcash::SpendingKey& sk, CAmount value,
-                          bool randomInputs) {
+#include <array>
+
+CMutableTransaction GetValidReceiveTransaction(ZCJoinSplit& params,
+                                const libzcash::SpendingKey& sk,
+                                CAmount value,
+                                bool randomInputs,
+                                int32_t version /* = 2 */) {
     CMutableTransaction mtx;
     mtx.nVersion = 2; // Enable JoinSplits
     mtx.vin.resize(2);
@@ -26,21 +30,19 @@ CWalletTx GetValidReceive(ZCJoinSplit& params,
     crypto_sign_keypair(joinSplitPubKey.begin(), joinSplitPrivKey);
     mtx.joinSplitPubKey = joinSplitPubKey;
 
-    boost::array<libzcash::JSInput, 2> inputs = {
+    std::array<libzcash::JSInput, 2> inputs = {
         libzcash::JSInput(), // dummy input
         libzcash::JSInput() // dummy input
     };
 
-    boost::array<libzcash::JSOutput, 2> outputs = {
+    std::array<libzcash::JSOutput, 2> outputs = {
         libzcash::JSOutput(sk.address(), value),
         libzcash::JSOutput(sk.address(), value)
     };
 
-    boost::array<libzcash::Note, 2> output_notes;
-
     // Prepare JoinSplits
     uint256 rt;
-    JSDescription jsdesc {params, mtx.joinSplitPubKey, rt,
+    JSDescription jsdesc {false, params, mtx.joinSplitPubKey, rt,
                           inputs, outputs, 2*value, 0, false};
     mtx.vjoinsplit.push_back(jsdesc);
 
@@ -55,6 +57,34 @@ CWalletTx GetValidReceive(ZCJoinSplit& params,
                                 joinSplitPrivKey
                                ) == 0);
 
+    return mtx;
+}
+
+CWalletTx GetValidReceive(ZCJoinSplit& params,
+                                const libzcash::SpendingKey& sk,
+                                CAmount value,
+                                bool randomInputs,
+                                int32_t version /* = 2 */)
+{
+    CMutableTransaction mtx = GetValidReceiveTransaction(
+        params, sk, value, randomInputs, version
+    );
+    CTransaction tx {mtx};
+    CWalletTx wtx {NULL, tx};
+    return wtx;
+}
+
+CWalletTx GetInvalidCommitmentReceive(ZCJoinSplit& params,
+                                const libzcash::SpendingKey& sk,
+                                CAmount value,
+                                bool randomInputs,
+                                int32_t version /* = 2 */)
+{
+    CMutableTransaction mtx = GetValidReceiveTransaction(
+        params, sk, value, randomInputs, version
+    );
+    mtx.vjoinsplit[0].commitments[0] = uint256();
+    mtx.vjoinsplit[0].commitments[1] = uint256();
     CTransaction tx {mtx};
     CWalletTx wtx {NULL, tx};
     return wtx;
@@ -95,14 +125,14 @@ CWalletTx GetValidSpend(ZCJoinSplit& params,
     libzcash::JSInput dummyin;
 
     {
-        if (note.value > value) {
+        if (note.value() > value) {
             libzcash::SpendingKey dummykey = libzcash::SpendingKey::random();
             libzcash::PaymentAddress dummyaddr = dummykey.address();
-            dummyout = libzcash::JSOutput(dummyaddr, note.value - value);
-        } else if (note.value < value) {
+            dummyout = libzcash::JSOutput(dummyaddr, note.value() - value);
+        } else if (note.value() < value) {
             libzcash::SpendingKey dummykey = libzcash::SpendingKey::random();
             libzcash::PaymentAddress dummyaddr = dummykey.address();
-            libzcash::Note dummynote(dummyaddr.a_pk, (value - note.value), uint256(), uint256());
+            libzcash::Note dummynote(dummyaddr.a_pk, (value - note.value()), uint256(), uint256());
             tree.append(dummynote.cm());
             dummyin = libzcash::JSInput(tree.witness(), dummynote, dummykey);
         }
@@ -110,21 +140,19 @@ CWalletTx GetValidSpend(ZCJoinSplit& params,
 
     tree.append(note.cm());
 
-    boost::array<libzcash::JSInput, 2> inputs = {
+    std::array<libzcash::JSInput, 2> inputs = {
         libzcash::JSInput(tree.witness(), note, sk),
         dummyin
     };
 
-    boost::array<libzcash::JSOutput, 2> outputs = {
+    std::array<libzcash::JSOutput, 2> outputs = {
         dummyout, // dummy output
         libzcash::JSOutput() // dummy output
     };
 
-    boost::array<libzcash::Note, 2> output_notes;
-
     // Prepare JoinSplits
     uint256 rt = tree.root();
-    JSDescription jsdesc {params, mtx.joinSplitPubKey, rt,
+    JSDescription jsdesc {false, params, mtx.joinSplitPubKey, rt,
                           inputs, outputs, 0, value, false};
     mtx.vjoinsplit.push_back(jsdesc);
 
