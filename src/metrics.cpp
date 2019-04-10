@@ -16,8 +16,16 @@
 #include <boost/thread.hpp>
 #include <boost/thread/synchronized_value.hpp>
 #include <string>
+#ifdef WIN32
+#include <io.h>
+#else
 #include <sys/ioctl.h>
+#endif
 #include <unistd.h>
+
+#include "zen/forkmanager.h"
+
+using namespace zen;
 
 void AtomicTimer::start()
 {
@@ -197,34 +205,65 @@ void ConnectMetricsScreen()
 int printStats(bool mining)
 {
     // Number of lines that are always displayed
-    int lines = 4;
+    int lines = 5;
 
-    int height;
-    int64_t tipmediantime;
-    size_t connections;
-    int64_t netsolps;
+    int height = chainActive.Height();
+    int64_t netsolps = GetNetworkHashPS(120, -1);
+    int connections = 0;
+    int tlsConnections = 0;
     {
         LOCK2(cs_main, cs_vNodes);
-        height = chainActive.Height();
-        tipmediantime = chainActive.Tip()->GetMedianTimePast();
         connections = vNodes.size();
-        netsolps = GetNetworkHashPS(120, -1);
+        tlsConnections = std::count_if(vNodes.begin(), vNodes.end(), [](CNode* n) {return n->ssl != NULL;});
     }
+    unsigned long mempool_count = mempool.size();
+/*
+    // OpenSSL related statistics
+    tlsvalidate = GetArg("-tlsvalidate","");
+    cipherdescription = cipherdescription.length() == 0 ? "Not Encrypted" : cipherdescription;
+    securitylevel = securitylevel.length() == 0 ? "INACTIVE" : securitylevel;
+    routingsecrecy = routingsecrecy.length() == 0 ? GetArg("-onlynet", "") : routingsecrecy;
+    validationdescription = (tlsvalidate == "1" ? "YES" : "PUBLIC");
+
+    if (routingsecrecy == "" || routingsecrecy == "ipv4" || routingsecrecy == "ipv6") routingsecrecy = "CLEARNET";
+    else if (routingsecrecy == "onion") routingsecrecy = "TOR NETWORK";
+
+    {
+        LOCK2(cs_main, cs_vNodes);
+
+        // Find first encrypted connection and populate states
+        if (connections > 0) {
+            for (int i = 0; i < vNodes.size(); i++) {
+                if (vNodes[i]->ssl != NULL && SSL_get_state(vNodes[i]->ssl) == TLS_ST_OK) {
+                    char *tmp = new char[256];
+                    cipherdescription = SSL_CIPHER_get_name(SSL_get_current_cipher(vNodes[i]->ssl));
+                    securitylevel = "ACTIVE";
+                    break;
+                }
+                else if (cipherdescription == "Not Encrypted") {
+                    securitylevel = "INACTIVE";
+                }
+            }
+        }
+    }
+*/
     auto localsolps = GetLocalSolPS();
 
-    if (IsInitialBlockDownload()) {
-        int netheight = EstimateNetHeight(height, tipmediantime, Params());
-        int downloadPercent = height * 100 / netheight;
-        std::cout << "     " << _("Downloading blocks") << " | " << height << " / ~" << netheight << " (" << downloadPercent << "%)" << std::endl;
-    } else {
-        std::cout << "           " << _("Block height") << " | " << height << std::endl;
-    }
-    std::cout << "            " << _("Connections") << " | " << connections << std::endl;
+/*
+    std::cout << "          " << _("COMSEC STATUS") << " | " << securitylevel << std::endl;
+    std::cout << "      " << _("Encryption Cipher") << " | " << cipherdescription << std::endl;
+    std::cout << "        " << _("Routing Secrecy") << " | " << routingsecrecy << std::endl;
+    std::cout << "         " << _("Validate Peers") << " | " << validationdescription << std::endl;
+    std::cout << std::endl;
+*/
+    std::cout << "           " << _("Block height") << " | " << height << std::endl;
+    std::cout << "            " << _("Connections") << " | " << connections << " (TLS: " << tlsConnections << ")" << std::endl;
     std::cout << "  " << _("Network solution rate") << " | " << netsolps << " Sol/s" << std::endl;
     if (mining && miningTimer.running()) {
         std::cout << "    " << _("Local solution rate") << " | " << strprintf("%.4f Sol/s", localsolps) << std::endl;
         lines++;
     }
+    std::cout << "       " << _("Mempool TX count") << " | " << mempool_count << " TX" << std::endl;
     std::cout << std::endl;
 
     return lines;
@@ -258,7 +297,7 @@ int printMiningStatus(bool mining)
         lines++;
     } else {
         std::cout << _("You are currently not mining.") << std::endl;
-        std::cout << _("To enable mining, add 'gen=1' to your zcash.conf and restart.") << std::endl;
+        std::cout << _("To enable mining, add 'gen=1' to your zen.conf and restart.") << std::endl;
         lines += 2;
     }
     std::cout << std::endl;
@@ -326,9 +365,11 @@ int printMetrics(size_t cols, bool mining)
                 if (mapBlockIndex.count(hash) > 0 &&
                         chainActive.Contains(mapBlockIndex[hash])) {
                     int height = mapBlockIndex[hash]->nHeight;
-                    CAmount subsidy = GetBlockSubsidy(height, consensusParams);
-                    if ((height > 0) && (height <= consensusParams.GetLastFoundersRewardBlockHeight())) {
-                        subsidy -= subsidy/5;
+                    CAmount reward = GetBlockSubsidy(height, consensusParams);
+                    CAmount subsidy = reward;
+                    for (Fork::CommunityFundType cfType=Fork::CommunityFundType::FOUNDATION; cfType < Fork::CommunityFundType::ENDTYPE; cfType = Fork::CommunityFundType(cfType + 1)) {
+                        CAmount communityFundAmount = ForkManager::getInstance().getCommunityFundReward(height,reward, cfType);
+                        subsidy -= communityFundAmount;
                     }
                     if (std::max(0, COINBASE_MATURITY - (tipHeight - height)) > 0) {
                         immature += subsidy;
@@ -409,11 +450,34 @@ int printInitMessage()
 
     return 2;
 }
+#ifdef WIN32
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+
+bool enableVTMode()
+{
+    // Set output mode to handle virtual terminal sequences
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hOut, &dwMode)) {
+        return false;
+    }
+
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    if (!SetConsoleMode(hOut, dwMode)) {
+        return false;
+    }
+    return true;
+}
+#endif
 
 void ThreadShowMetricsScreen()
 {
     // Make this thread recognisable as the metrics screen thread
-    RenameThread("zcash-metrics-screen");
+    RenameThread("horizen-metrics-screen");
 
     // Determine whether we should render a persistent UI or rolling metrics
     bool isTTY = isatty(STDOUT_FILENO);
@@ -421,6 +485,9 @@ void ThreadShowMetricsScreen()
     int64_t nRefresh = GetArg("-metricsrefreshtime", isTTY ? 1 : 600);
 
     if (isScreen) {
+#ifdef WIN32
+        enableVTMode();
+#endif
         // Clear screen
         std::cout << "\e[2J";
 
@@ -429,8 +496,10 @@ void ThreadShowMetricsScreen()
         std::cout << std::endl;
 
         // Thank you text
-        std::cout << _("Thank you for running a Zcash node!") << std::endl;
-        std::cout << _("You're helping to strengthen the network and contributing to a social good :)") << std::endl;
+        std::cout << _("Zen is economic freedom. Thanks for running a node.") << std::endl;
+        std::cout << _("仕方が無い") << std::endl;
+        std::cout << _("Shikata ga nai.") << std::endl;
+        std::cout << _("它不能得到帮助") << std::endl << std::endl;
 
         // Privacy notice text
         std::cout << PrivacyInfo();
@@ -444,11 +513,17 @@ void ThreadShowMetricsScreen()
 
         // Get current window size
         if (isTTY) {
+#ifdef WIN32
+            CONSOLE_SCREEN_BUFFER_INFO csbi;
+            GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+            cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+#else
             struct winsize w;
             w.ws_col = 0;
             if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) != -1 && w.ws_col != 0) {
                 cols = w.ws_col;
             }
+#endif
         }
 
         if (isScreen) {
@@ -473,7 +548,14 @@ void ThreadShowMetricsScreen()
 
         if (isScreen) {
             // Explain how to exit
-            std::cout << "[" << _("Press Ctrl+C to exit") << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
+            //std::cout << "[" << _("Press Ctrl+C to exit") << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
+            std::cout << "[";
+#ifdef WIN32
+            std::cout << _("'zcash-cli.exe stop' to exit");
+#else
+            std::cout << _("Press Ctrl+C to exit");
+#endif
+            std::cout << "] [" << _("Set 'showmetrics=0' to hide") << "]" << std::endl;
         } else {
             // Print delineator
             std::cout << "----------------------------------------" << std::endl;

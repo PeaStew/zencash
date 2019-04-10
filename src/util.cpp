@@ -103,6 +103,7 @@ map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
 bool fPrintToConsole = false;
 bool fPrintToDebugLog = true;
+bool fLimitDebugLogSize = true;
 bool fDaemon = false;
 bool fServer = false;
 string strMiscWarning;
@@ -170,12 +171,12 @@ static boost::once_flag debugPrintInitFlag = BOOST_ONCE_INIT;
  * We use boost::call_once() to make sure mutexDebugLog and
  * vMsgsBeforeOpenLog are initialized in a thread-safe manner.
  *
- * NOTE: fileout, mutexDebugLog and sometimes vMsgsBeforeOpenLog
+ * NOTE: debugLogFp, mutexDebugLog and sometimes vMsgsBeforeOpenLog
  * are leaked on exit. This is ugly, but will be cleaned up by
  * the OS/libc. When the shutdown sequence is fully audited and
  * tested, explicit destruction of these objects can be implemented.
  */
-static FILE* fileout = NULL;
+static FILE* debugLogFp = NULL;
 static boost::mutex* mutexDebugLog = NULL;
 static list<string> *vMsgsBeforeOpenLog;
 
@@ -191,20 +192,25 @@ static void DebugPrintInit()
     vMsgsBeforeOpenLog = new list<string>;
 }
 
+boost::filesystem::path GetDebugLogPath()
+{
+    return GetDataDir() / "debug.log";
+}
+
 void OpenDebugLog()
 {
     boost::call_once(&DebugPrintInit, debugPrintInitFlag);
     boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
-
-    assert(fileout == NULL);
+    boost::filesystem::path pathDebug = GetDebugLogPath();
+    assert(debugLogFp == NULL);
     assert(vMsgsBeforeOpenLog);
-    boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
-    fileout = fopen(pathDebug.string().c_str(), "a");
-    if (fileout) setbuf(fileout, NULL); // unbuffered
+    debugLogFp = fopen(pathDebug.string().c_str(), "a");
+    if (debugLogFp)
+        setbuf(debugLogFp, NULL); // unbuffered
 
     // dump buffered messages from before we opened the log
     while (!vMsgsBeforeOpenLog->empty()) {
-        FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
+        FileWriteStr(vMsgsBeforeOpenLog->front(), debugLogFp);
         vMsgsBeforeOpenLog->pop_front();
     }
 
@@ -254,7 +260,16 @@ static std::string LogTimestampStr(const std::string &str, bool *fStartedNewLine
         return str;
 
     if (*fStartedNewLine)
-        strStamped =  DateTimeStrFormat("%Y-%m-%d %H:%M:%S", GetTime()) + ' ' + str;
+    {
+        if (!fLogTimeMicros)
+        {
+            strStamped =  DateTimeStrFormat("%Y-%m-%d %H:%M:%S", GetTime()) + ' ' + str;
+        }
+        else
+        {
+            strStamped =  DateTimeStrFormatMicro("%Y-%m-%d %H:%M:%S%F") + ' ' + str;
+        }
+    }
     else
         strStamped = str;
 
@@ -284,22 +299,25 @@ int LogPrintStr(const std::string &str)
         string strTimestamped = LogTimestampStr(str, &fStartedNewLine);
 
         // buffer if we haven't opened the log yet
-        if (fileout == NULL) {
+        if (debugLogFp == NULL) {
             assert(vMsgsBeforeOpenLog);
             ret = strTimestamped.length();
             vMsgsBeforeOpenLog->push_back(strTimestamped);
         }
         else
         {
+            // prevent log from endless growth
+            if (fLimitDebugLogSize)
+                ShrinkDebugFile();
             // reopen the log file, if requested
             if (fReopenDebugLog) {
                 fReopenDebugLog = false;
-                boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
-                if (freopen(pathDebug.string().c_str(),"a",fileout) != NULL)
-                    setbuf(fileout, NULL); // unbuffered
+                boost::filesystem::path pathDebug = GetDebugLogPath();
+                if (freopen(pathDebug.string().c_str(),"a", debugLogFp) != NULL)
+                    setbuf(debugLogFp, NULL); // unbuffered
             }
 
-            ret = FileWriteStr(strTimestamped, fileout);
+            ret = FileWriteStr(strTimestamped, debugLogFp);
         }
     }
     return ret;
@@ -423,7 +441,7 @@ static std::string FormatException(const std::exception* pex, const char* pszThr
     char pszModule[MAX_PATH] = "";
     GetModuleFileNameA(NULL, pszModule, sizeof(pszModule));
 #else
-    const char* pszModule = "Zcash";
+    const char* pszModule = "Zen";
 #endif
     if (pex)
         return strprintf(
@@ -444,13 +462,13 @@ void PrintExceptionContinue(const std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
-    // Windows < Vista: C:\Documents and Settings\Username\Application Data\Zcash
-    // Windows >= Vista: C:\Users\Username\AppData\Roaming\Zcash
-    // Mac: ~/Library/Application Support/Zcash
-    // Unix: ~/.zcash
+    // Windows < Vista: C:\Documents and Settings\Username\Application Data\Zen
+    // Windows >= Vista: C:\Users\Username\AppData\Roaming\Zen
+    // Mac: ~/Library/Application Support/Zen
+    // Unix: ~/.zen
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Zcash";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "Zen";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -462,10 +480,10 @@ boost::filesystem::path GetDefaultDataDir()
     // Mac
     pathRet /= "Library/Application Support";
     TryCreateDirectory(pathRet);
-    return pathRet / "Zcash";
+    return pathRet / "Zen";
 #else
     // Unix
-    return pathRet / ".zcash";
+    return pathRet / ".zen";
 #endif
 #endif
 }
@@ -582,7 +600,7 @@ void ClearDatadirCache()
 
 boost::filesystem::path GetConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-conf", "zcash.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-conf", "zen.conf"));
     if (!pathConfigFile.is_complete())
         pathConfigFile = GetDataDir(false) / pathConfigFile;
 
@@ -601,7 +619,7 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 
     for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
     {
-        // Don't overwrite existing settings so command line settings override zcash.conf
+        // Don't overwrite existing settings so command line settings override zen.conf
         string strKey = string("-") + it->string_key;
         if (mapSettingsRet.count(strKey) == 0)
         {
@@ -618,7 +636,7 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 #ifndef WIN32
 boost::filesystem::path GetPidFile()
 {
-    boost::filesystem::path pathPidFile(GetArg("-pid", "zcashd.pid"));
+    boost::filesystem::path pathPidFile(GetArg("-pid", "zend.pid"));
     if (!pathPidFile.is_complete()) pathPidFile = GetDataDir() / pathPidFile;
     return pathPidFile;
 }
@@ -761,25 +779,23 @@ void AllocateFileRange(FILE *file, unsigned int offset, unsigned int length) {
 void ShrinkDebugFile()
 {
     // Scroll debug.log if it's getting too big
-    boost::filesystem::path pathLog = GetDataDir() / "debug.log";
-    FILE* file = fopen(pathLog.string().c_str(), "r");
-    if (file && boost::filesystem::file_size(pathLog) > 10 * 1000000)
+    boost::filesystem::path pathDebug = GetDebugLogPath();
+    if (boost::filesystem::exists(pathDebug) && boost::filesystem::file_size(pathDebug) > 10 * 1000000)
     {
         // Restart the file with some of the end
-        std::vector <char> vch(200000,0);
+        FILE* file = fopen(pathDebug.string().c_str(), "r");
+        std::vector <char> vch(200000, 0);
         fseek(file, -((long)vch.size()), SEEK_END);
         int nBytes = fread(begin_ptr(vch), 1, vch.size(), file);
         fclose(file);
 
-        file = fopen(pathLog.string().c_str(), "w");
+        file = fopen(pathDebug.string().c_str(), "w");
         if (file)
         {
             fwrite(begin_ptr(vch), 1, nBytes, file);
             fclose(file);
         }
     }
-    else if (file != NULL)
-        fclose(file);
 }
 
 #ifdef WIN32
@@ -890,9 +906,10 @@ void SetThreadPriority(int nPriority)
 
 std::string PrivacyInfo()
 {
-    return "\n" +
-           FormatParagraph(strprintf(_("In order to ensure you are adequately protecting your privacy when using Zcash, please see <%s>."),
-                                     "https://z.cash/support/security/")) + "\n";
+    return "";
+//    return "\n" +
+//           FormatParagraph(strprintf(_("In order to ensure you are adequately protecting your privacy when using Zcash, please see <%s>."),
+//                                     "https://z.cash/support/security/")) + "\n";
 }
 
 std::string LicenseInfo()
@@ -900,6 +917,8 @@ std::string LicenseInfo()
     return "\n" +
            FormatParagraph(strprintf(_("Copyright (C) 2009-%i The Bitcoin Core Developers"), COPYRIGHT_YEAR)) + "\n" +
            FormatParagraph(strprintf(_("Copyright (C) 2015-%i The Zcash Developers"), COPYRIGHT_YEAR)) + "\n" +
+           FormatParagraph(strprintf(_("Copyright (C) 2015-%i Zdeveloper.org"), COPYRIGHT_YEAR)) + "\n" +
+           FormatParagraph(strprintf(_("Copyright (C) 2015-%i Zen Blockchain Foundation"), COPYRIGHT_YEAR)) + "\n" +
            "\n" +
            FormatParagraph(_("This is experimental software.")) + "\n" +
            "\n" +

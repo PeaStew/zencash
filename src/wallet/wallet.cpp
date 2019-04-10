@@ -18,6 +18,9 @@
 #include "utilmoneystr.h"
 #include "zcash/Note.hpp"
 #include "crypter.h"
+#include "chainparams.h"
+#include "zen/forkmanager.h"
+using namespace zen;
 
 #include <assert.h>
 
@@ -156,7 +159,7 @@ bool CWallet::AddKeyPubKey(const CKey& secret, const CPubKey &pubkey)
 
     // check if we need to remove from watch-only
     CScript script;
-    script = GetScriptForDestination(pubkey.GetID());
+    script = GetScriptForDestination(pubkey.GetID(), false);
     if (HaveWatchOnly(script))
         RemoveWatchOnly(script);
 
@@ -1269,6 +1272,12 @@ boost::optional<uint256> CWallet::GetNoteNullifier(const JSDescription& jsdesc,
         hSig,
         (unsigned char) n);
     auto note = note_pt.note(address);
+
+    // Check note plaintext against note commitment
+    if (note.cm() != jsdesc.commitments[n]) {
+        throw libzcash::note_decryption_failed();
+    }
+
     // SpendingKeys are only available if:
     // - We have them (this isn't a viewing key)
     // - The wallet is unlocked
@@ -2228,7 +2237,7 @@ CAmount CWallet::GetImmatureWatchOnlyBalance() const
 /**
  * populate vCoins with vector of available COutputs.
  */
-void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const CCoinControl *coinControl, bool fIncludeZeroValue, bool fIncludeCoinBase) const
+void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const CCoinControl *coinControl, bool fIncludeZeroValue, bool fIncludeCoinBase, bool fIncludeCommunityFund) const
 {
     vCoins.clear();
 
@@ -2245,8 +2254,8 @@ void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const
             if (fOnlyConfirmed && !pcoin->IsTrusted())
                 continue;
 
-            if (pcoin->IsCoinBase() && !fIncludeCoinBase)
-                continue;
+             if (pcoin->IsCoinBase() && !fIncludeCoinBase && !fIncludeCommunityFund)
+                 continue;
 
             if (pcoin->IsCoinBase() && pcoin->GetBlocksToMaturity() > 0)
                 continue;
@@ -2260,7 +2269,26 @@ void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const
                 if (!(IsSpent(wtxid, i)) && mine != ISMINE_NO &&
                     !IsLockedCoin((*it).first, i) && (pcoin->vout[i].nValue > 0 || fIncludeZeroValue) &&
                     (!coinControl || !coinControl->HasSelected() || coinControl->fAllowOtherInputs || coinControl->IsSelected((*it).first, i)))
-                        vCoins.push_back(COutput(pcoin, i, nDepth, (mine & ISMINE_SPENDABLE) != ISMINE_NO));
+                {
+                    if (pcoin->IsCoinBase())
+                    {
+                        const CCoins *coins = pcoinsTip->AccessCoins(wtxid);
+                        assert(coins);
+
+                        if (IsCommunityFund(coins, i))
+                        {
+                            if(!fIncludeCommunityFund)
+                                continue;
+                        }
+                        else
+                        {
+                            if(!fIncludeCoinBase)
+                                continue;
+                        }
+                    }
+                    vCoins.push_back(COutput(pcoin, i, nDepth, (mine & ISMINE_SPENDABLE) != ISMINE_NO));
+                }
+
             }
         }
     }
@@ -2415,20 +2443,26 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, int nConfMine, int
 
 bool CWallet::SelectCoins(const CAmount& nTargetValue, set<pair<const CWalletTx*,unsigned int> >& setCoinsRet, CAmount& nValueRet,  bool& fOnlyCoinbaseCoinsRet, bool& fNeedCoinbaseCoinsRet, const CCoinControl* coinControl) const
 {
-    // Output parameter fOnlyCoinbaseCoinsRet is set to true when the only available coins are coinbase utxos.
-    vector<COutput> vCoinsNoCoinbase, vCoinsWithCoinbase;
-    AvailableCoins(vCoinsNoCoinbase, true, coinControl, false, false);
-    AvailableCoins(vCoinsWithCoinbase, true, coinControl, false, true);
-    fOnlyCoinbaseCoinsRet = vCoinsNoCoinbase.size() == 0 && vCoinsWithCoinbase.size() > 0;
-
     // If coinbase utxos can only be sent to zaddrs, exclude any coinbase utxos from coin selection.
     bool fProtectCoinbase = Params().GetConsensus().fCoinbaseMustBeProtected;
-    vector<COutput> vCoins = (fProtectCoinbase) ? vCoinsNoCoinbase : vCoinsWithCoinbase;
+    bool fProtectCFCoinbase = false;
+
+    // CF exemption allowed only after hfCommunityFundHeight hardfork
+    if (!ForkManager::getInstance().canSendCommunityFundsToTransparentAddress(chainActive.Height()))
+        fProtectCFCoinbase = fProtectCoinbase;
+
+    // Output parameter fOnlyCoinbaseCoinsRet is set to true when the only available coins are coinbase utxos.
+    vector<COutput> vCoinsNoProtectedCoinbase, vCoinsWithProtectedCoinbase;
+    AvailableCoins(vCoinsNoProtectedCoinbase, true, coinControl, false, false, !fProtectCFCoinbase);
+    AvailableCoins(vCoinsWithProtectedCoinbase, true, coinControl, false, true, true);
+    fOnlyCoinbaseCoinsRet = vCoinsNoProtectedCoinbase.size() == 0 && vCoinsWithProtectedCoinbase.size() > 0;
+
+    vector<COutput> vCoins = (fProtectCoinbase) ? vCoinsNoProtectedCoinbase : vCoinsWithProtectedCoinbase;
 
     // Output parameter fNeedCoinbaseCoinsRet is set to true if coinbase utxos need to be spent to meet target amount
-    if (fProtectCoinbase && vCoinsWithCoinbase.size() > vCoinsNoCoinbase.size()) {
+    if (fProtectCoinbase && vCoinsWithProtectedCoinbase.size() > vCoinsNoProtectedCoinbase.size()) {
         CAmount value = 0;
-        for (const COutput& out : vCoinsNoCoinbase) {
+        for (const COutput& out : vCoinsNoProtectedCoinbase) {
             if (!out.fSpendable) {
                 continue;
             }
@@ -2436,7 +2470,7 @@ bool CWallet::SelectCoins(const CAmount& nTargetValue, set<pair<const CWalletTx*
         }
         if (value <= nTargetValue) {
             CAmount valueWithCoinbase = 0;
-            for (const COutput& out : vCoinsWithCoinbase) {
+            for (const COutput& out : vCoinsWithProtectedCoinbase) {
                 if (!out.fSpendable) {
                     continue;
                 }
@@ -2653,7 +2687,7 @@ bool CWallet::CreateTransaction(const vector<CRecipient>& vecSend, CWalletTx& wt
                 {
                     if (fOnlyCoinbaseCoins && Params().GetConsensus().fCoinbaseMustBeProtected) {
                         strFailReason = _("Coinbase funds can only be sent to a zaddr");
-                    } else if (fNeedCoinbaseCoins) {
+                    } else if (fNeedCoinbaseCoins && Params().GetConsensus().fCoinbaseMustBeProtected) {
                         strFailReason = _("Insufficient funds, coinbase funds can only be spent after they have been sent to a zaddr");
                     } else {
                         strFailReason = _("Insufficient funds");

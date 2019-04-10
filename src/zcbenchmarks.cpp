@@ -17,7 +17,7 @@
 #include "main.h"
 #include "miner.h"
 #include "pow.h"
-#include "rpcserver.h"
+#include "rpc/server.h"
 #include "script/sign.h"
 #include "sodium.h"
 #include "streams.h"
@@ -61,7 +61,7 @@ void post_wallet_load(){
     // Generate coins in the background
     if (pwalletMain || !GetArg("-mineraddress", "").empty())
         GenerateBitcoins(GetBoolArg("-gen", false), pwalletMain, GetArg("-genproclimit", 1));
-#endif    
+#endif
 }
 
 
@@ -115,7 +115,8 @@ double benchmark_create_joinsplit()
 
     struct timeval tv_start;
     timer_start(tv_start);
-    JSDescription jsdesc(*pzcashParams,
+    JSDescription jsdesc(true,
+						 *pzcashParams,
                          pubKeyHash,
                          anchor,
                          {JSInput(), JSInput()},
@@ -276,8 +277,8 @@ double benchmark_large_tx()
         ScriptError serror = SCRIPT_ERR_OK;
         assert(VerifyScript(final_spending_tx.vin[i].scriptSig,
                             prevPubKey,
-                            STANDARD_SCRIPT_VERIFY_FLAGS,
-                            TransactionSignatureChecker(&final_spending_tx, i),
+                            STANDARD_NONCONTEXTUAL_SCRIPT_VERIFY_FLAGS,
+                            TransactionSignatureChecker(&final_spending_tx, i, nullptr),
                             &serror));
     }
     return timer_stop(tv_start);
@@ -422,10 +423,14 @@ double benchmark_connectblock_slow()
     index.pprev = &indexPrev;
     mapBlockIndex.insert(std::make_pair(hashPrev, &indexPrev));
 
+    // Build a CChain
+    CChain chain;
+    chain.SetTip(&index);
+
     CValidationState state;
     struct timeval tv_start;
     timer_start(tv_start);
-    assert(ConnectBlock(block, state, &index, view, true));
+    assert(ConnectBlock(block, state, &index, view, chain, true));
     auto duration = timer_stop(tv_start);
 
     // Undo alterations to global state

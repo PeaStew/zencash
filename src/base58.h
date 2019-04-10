@@ -164,6 +164,7 @@ public:
     CTxDestination Get() const;
     bool GetKeyID(CKeyID &keyID) const;
     bool IsScript() const;
+    bool IsPubKey() const;
 };
 
 /**

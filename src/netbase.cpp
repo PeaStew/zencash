@@ -15,7 +15,9 @@
 #include "random.h"
 #include "util.h"
 #include "utilstrencodings.h"
-
+#ifdef __APPLE__
+#undef HAVE_GETADDRINFO_A
+#endif
 #ifdef HAVE_GETADDRINFO_A
 #include <netdb.h>
 #endif

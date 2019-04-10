@@ -44,10 +44,10 @@ static bool AppInitRawTx(int argc, char* argv[])
     if (argc<2 || mapArgs.count("-?") || mapArgs.count("-h") || mapArgs.count("-help"))
     {
         // First part of help message is specific to this utility
-        std::string strUsage = _("Zcash zcash-tx utility version") + " " + FormatFullVersion() + "\n\n" +
+        std::string strUsage = _("Zencash zen-tx utility version") + " " + FormatFullVersion() + "\n\n" +
             _("Usage:") + "\n" +
-              "  zcash-tx [options] <hex-tx> [commands]  " + _("Update hex-encoded zcash transaction") + "\n" +
-              "  zcash-tx [options] -create [commands]   " + _("Create hex-encoded zcash transaction") + "\n" +
+              "  zen-tx [options] <hex-tx> [commands]  " + _("Update hex-encoded zencash transaction") + "\n" +
+              "  zen-tx [options] -create [commands]   " + _("Create hex-encoded zencash transaction") + "\n" +
               "\n";
 
         fprintf(stdout, "%s", strUsage.c_str());
@@ -157,7 +157,8 @@ static void RegisterLoad(const string& strInput)
 static void MutateTxVersion(CMutableTransaction& tx, const string& cmdVal)
 {
     int64_t newVersion = atoi64(cmdVal);
-    if (newVersion < CTransaction::MIN_CURRENT_VERSION || newVersion > CTransaction::MAX_CURRENT_VERSION)
+    //TODO VERIFY WHAT'S USED FOR
+    if ((newVersion < CTransaction::MIN_OLD_VERSION && newVersion != GROTH_TX_VERSION)) // || newVersion > CTransaction::MAX_CURRENT_VERSION)
         throw runtime_error("Invalid TX version requested");
 
     tx.nVersion = (int) newVersion;
@@ -431,7 +432,7 @@ static void MutateTxSign(CMutableTransaction& tx, const string& flagStr)
         BOOST_FOREACH(const CTransaction& txv, txVariants) {
             txin.scriptSig = CombineSignatures(prevPubKey, mergedTx, i, txin.scriptSig, txv.vin[i].scriptSig);
         }
-        if (!VerifyScript(txin.scriptSig, prevPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&mergedTx, i)))
+        if (!VerifyScript(txin.scriptSig, prevPubKey, STANDARD_NONCONTEXTUAL_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&mergedTx, i)))
             fComplete = false;
     }
 

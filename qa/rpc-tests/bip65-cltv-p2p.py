@@ -12,6 +12,7 @@ from test_framework.comptool import TestInstance, TestManager
 from test_framework.script import CScript, OP_1NEGATE, OP_NOP2, OP_DROP
 from binascii import unhexlify
 import cStringIO
+import time
 
 
 '''
@@ -37,7 +38,7 @@ class BIP65Test(ComparisonTestFramework):
 
     def run_test(self):
         test = TestManager(self, self.options.tmpdir)
-        test.add_all_connections(self.nodes)
+        # Don't call test.add_all_connections because there is only one node.
         NetworkThread().start() # Start up network handling in another thread
         test.run()
 
@@ -63,9 +64,9 @@ class BIP65Test(ComparisonTestFramework):
 
     def get_tests(self):
         self.coinbase_blocks = self.nodes[0].generate(1)
-        self.nodes[0].generate(100)
         self.tip = int ("0x" + self.nodes[0].getbestblockhash() + "L", 0)
         self.nodeaddress = self.nodes[0].getnewaddress()
+        self.block_time = time.time() + 1
 
         '''Check that the rules are enforced.'''
         for valid in (True, False):
@@ -76,12 +77,7 @@ class BIP65Test(ComparisonTestFramework):
                 self.invalidate_transaction(spendtx)
                 spendtx.rehash()
 
-            gbt = self.nodes[0].getblocktemplate()
-            self.block_time = gbt["mintime"] + 1
-            self.block_bits = int("0x" + gbt["bits"], 0)
-
-            block = create_block(self.tip, create_coinbase(101),
-                                 self.block_time, self.block_bits)
+            block = create_block(self.tip, create_coinbase(1), self.block_time)
             block.nVersion = 4
             block.vtx.append(spendtx)
             block.hashMerkleRoot = block.calc_merkle_root()

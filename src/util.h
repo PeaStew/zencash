@@ -46,9 +46,11 @@ extern std::map<std::string, std::vector<std::string> > mapMultiArgs;
 extern bool fDebug;
 extern bool fPrintToConsole;
 extern bool fPrintToDebugLog;
+extern bool fLimitDebugLogSize;
 extern bool fServer;
 extern std::string strMiscWarning;
 extern bool fLogTimestamps;
+extern bool fLogTimeMicros;
 extern bool fLogIPs;
 extern std::atomic<bool> fReopenDebugLog;
 extern CTranslationInterface translationInterface;
@@ -130,7 +132,7 @@ void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
 #endif
 class missing_zcash_conf : public std::runtime_error {
 public:
-    missing_zcash_conf() : std::runtime_error("Missing zcash.conf") { }
+    missing_zcash_conf() : std::runtime_error("Missing zen.conf") { }
 };
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
 #ifdef WIN32
@@ -234,7 +236,7 @@ void RenameThread(const char* name);
  */
 template <typename Callable> void TraceThread(const char* name,  Callable func)
 {
-    std::string s = strprintf("zcash-%s", name);
+    std::string s = strprintf("zen-%s", name);
     RenameThread(s.c_str());
     try
     {
@@ -256,5 +258,20 @@ template <typename Callable> void TraceThread(const char* name,  Callable func)
         throw;
     }
 }
+
+// Utilities useful for developing and debugging
+//--------------------------------------------------------------
+class CBlockIndex;
+
+void dump_index(const CBlockIndex* pindex, int val = 0);
+void dump_dirty();
+void dump_candidates();
+void dump_db();
+void dump_global_tips(int limit = 0);
+
+std::string dbg_blk_in_fligth();
+std::string dbg_blk_unlinked();
+std::string dbg_blk_candidates();
+std::string dbg_blk_global_tips();
 
 #endif // BITCOIN_UTIL_H

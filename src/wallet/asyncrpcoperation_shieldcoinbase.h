@@ -18,8 +18,6 @@
 
 #include <univalue.h>
 
-#include "paymentdisclosure.h"
-
 // Default transaction fee if caller does not specify one.
 #define SHIELD_COINBASE_DEFAULT_MINERS_FEE   10000
 
@@ -42,7 +40,7 @@ struct ShieldCoinbaseJSInfo
 
 class AsyncRPCOperation_shieldcoinbase : public AsyncRPCOperation {
 public:
-    AsyncRPCOperation_shieldcoinbase(std::vector<ShieldCoinbaseUTXO> inputs, std::string toAddress, CAmount fee = SHIELD_COINBASE_DEFAULT_MINERS_FEE, UniValue contextInfo = NullUniValue);
+    AsyncRPCOperation_shieldcoinbase(CMutableTransaction contextualTx, std::vector<ShieldCoinbaseUTXO> inputs, std::string toAddress, CAmount fee = SHIELD_COINBASE_DEFAULT_MINERS_FEE, UniValue contextInfo = NullUniValue);
     virtual ~AsyncRPCOperation_shieldcoinbase();
 
     // We don't want to be copied or moved around
@@ -56,8 +54,6 @@ public:
     virtual UniValue getStatus() const;
 
     bool testmode = false;  // Set to true to disable sending txs and generating proofs
-
-    bool paymentDisclosureMode = false; // Set to true to save esk for encrypted notes in payment disclosure database.
 
 private:
     friend class TEST_FRIEND_AsyncRPCOperation_shieldcoinbase;    // class for unit testing
@@ -84,9 +80,6 @@ private:
     void lock_utxos();
 
     void unlock_utxos();
-
-    // payment disclosure!
-    std::vector<PaymentDisclosureKeyInfo> paymentDisclosureData_;
 };
 
 

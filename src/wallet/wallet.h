@@ -159,12 +159,12 @@ public:
     // Transaction hash
     uint256 hash;
     // Index into CTransaction.vjoinsplit
-    size_t js;
+    uint64_t js;
     // Index into JSDescription fields of length ZC_NUM_JS_OUTPUTS
     uint8_t n;
 
     JSOutPoint() { SetNull(); }
-    JSOutPoint(uint256 h, size_t js, uint8_t n) : hash {h}, js {js}, n {n} { }
+    JSOutPoint(uint256 h, uint64_t js, uint8_t n) : hash {h}, js {js}, n {n} { }
 
     ADD_SERIALIZE_METHODS;
 
@@ -884,7 +884,7 @@ public:
     //! check whether we are allowed to upgrade (or already support) to the named feature
     bool CanSupportFeature(enum WalletFeature wf) { AssertLockHeld(cs_wallet); return nWalletMaxVersion >= wf; }
 
-    void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl = NULL, bool fIncludeZeroValue=false, bool fIncludeCoinBase=true) const;
+    void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl = NULL, bool fIncludeZeroValue=false, bool fIncludeCoinBase=true, bool fIncludeCommunityFund=true) const;
     bool SelectCoinsMinConf(const CAmount& nTargetValue, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, CAmount& nValueRet) const;
 
     bool IsSpent(const uint256& hash, unsigned int n) const;

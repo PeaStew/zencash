@@ -36,6 +36,16 @@ class Class
 }
 ```
 
+Zencash-specific code
+====================
+
+This new version of Zencash is no longer based on ZClassic but on ZCash.
+
+### zen folder and namespace
+
+All Zencash-specific files should reside under a zen subfolder and Zencash-specific C++ classes must be declared within a zen namespace.
+
+
 Doxygen comments
 -----------------
 
@@ -168,6 +178,10 @@ Threads
 - ZcashMiner : Generates zcash (if wallet is enabled).
 
 - Shutdown : Does an orderly shutdown of everything.
+
+Pull Requests
+------------------------
+All pull requests must be submitted to the `Development` branch for testing.  Only `Development` may be merged to `master`.
 
 Pull Request Terminology
 ------------------------

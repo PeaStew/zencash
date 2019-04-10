@@ -47,6 +47,8 @@ public:
         return *this;
     }
 
+    int GetVersion() const { return m_version; }
+    int GetType() const { return m_type; }
 private:
     const int m_type;
     const int m_version;
@@ -85,7 +87,7 @@ int zcashconsensus_verify_script(const unsigned char *scriptPubKey, unsigned int
          // Regardless of the verification result, the tx did not error.
          set_error(err, zcashconsensus_ERR_OK);
 
-        return VerifyScript(tx.vin[nIn].scriptSig, CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags, TransactionSignatureChecker(&tx, nIn), NULL);
+         return VerifyScript(tx.vin[nIn].scriptSig, CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags, TransactionSignatureChecker(&tx, nIn, nullptr), NULL);
     } catch (const std::exception&) {
         return set_error(err, zcashconsensus_ERR_TX_DESERIALIZE); // Error deserializing
     }

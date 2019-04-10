@@ -12,7 +12,11 @@
 #include "primitives/block.h"
 #include "protocol.h"
 
+#include "zen/forkmanager.h"
+
 #include <vector>
+
+using namespace zen;
 
 struct CDNSSeedData {
     std::string name, host;
@@ -37,7 +41,9 @@ class CChainParams
 public:
     enum Base58Type {
         PUBKEY_ADDRESS,
+        PUBKEY_ADDRESS_OLD,
         SCRIPT_ADDRESS,
+        SCRIPT_ADDRESS_OLD,
         SECRET_KEY,
         EXT_PUBLIC_KEY,
         EXT_SECRET_KEY,
@@ -76,10 +82,9 @@ public:
     const std::vector<unsigned char>& Base58Prefix(Base58Type type) const { return base58Prefixes[type]; }
     const std::vector<SeedSpec6>& FixedSeeds() const { return vFixedSeeds; }
     const Checkpoints::CCheckpointData& Checkpoints() const { return checkpointData; }
-    /** Return the founder's reward address and script for a given block height */
-    std::string GetFoundersRewardAddressAtHeight(int height) const;
-    CScript GetFoundersRewardScriptAtHeight(int height) const;
-    std::string GetFoundersRewardAddressAtIndex(int i) const;
+    /** Return the community fund address and script for a given block height */
+    std::string GetCommunityFundAddressAtHeight(int height, Fork::CommunityFundType cfType) const;
+    CScript GetCommunityFundScriptAtHeight(int height, Fork::CommunityFundType cfType) const;
     /** Enforce coinbase consensus rule in regtest mode */
     void SetRegTestCoinbaseMustBeProtected() { consensus.fCoinbaseMustBeProtected = true; }
 protected:
@@ -106,7 +111,6 @@ protected:
     bool fMineBlocksOnDemand = false;
     bool fTestnetToBeDeprecatedFieldRPC = false;
     Checkpoints::CCheckpointData checkpointData;
-    std::vector<std::string> vFoundersRewardAddress;
 };
 
 /**

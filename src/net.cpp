@@ -16,6 +16,11 @@
 #include "scheduler.h"
 #include "ui_interface.h"
 #include "crypto/common.h"
+#include "zen/utiltls.h"
+
+
+
+
 
 #ifdef WIN32
 #include <string.h>
@@ -25,6 +30,12 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/thread.hpp>
+
+#include <openssl/conf.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <zen/tlsmanager.cpp>
+using namespace zen;
 
 // Dump addresses to peers.dat every 15 minutes (900s)
 #define DUMP_ADDRESSES_INTERVAL 900
@@ -43,6 +54,9 @@
 #define IPV6_PROTECTION_LEVEL 23
 #endif
 #endif
+
+#define USE_TLS
+#define COMPAT_NON_TLS // enables compatibility with nodes, that still doesn't support TLS connections
 
 using namespace std;
 
@@ -72,7 +86,7 @@ static std::vector<ListenSocket> vhListenSocket;
 CAddrMan addrman;
 int nMaxConnections = DEFAULT_MAX_PEER_CONNECTIONS;
 bool fAddressesInitialized = false;
-
+TLSManager tlsmanager = TLSManager();
 vector<CNode*> vNodes;
 CCriticalSection cs_vNodes;
 map<CInv, CDataStream> mapRelay;
@@ -98,6 +112,21 @@ boost::condition_variable messageHandlerCondition;
 // Signals for message handling
 static CNodeSignals g_signals;
 CNodeSignals& GetNodeSignals() { return g_signals; }
+
+// OpenSSL server and client contexts
+SSL_CTX *tls_ctx_server, *tls_ctx_client;
+
+static bool operator==(_NODE_ADDR a, _NODE_ADDR b)
+{
+    return (a.ipAddr == b.ipAddr);
+}
+
+static std::vector<NODE_ADDR> vNonTLSNodesInbound;
+static CCriticalSection cs_vNonTLSNodesInbound;
+
+static std::vector<NODE_ADDR> vNonTLSNodesOutbound;
+static CCriticalSection cs_vNonTLSNodesOutbound;
+
 
 void AddOneShot(const std::string& strDest)
 {
@@ -351,6 +380,8 @@ CNode* FindNode(const CService& addr)
     return NULL;
 }
 
+
+
 CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 {
     if (pszDest == NULL) {
@@ -385,8 +416,67 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 
         addrman.Attempt(addrConnect);
 
+        SSL *ssl = NULL;
+        
+#ifdef USE_TLS
+        /* TCP connection is ready. Do client side SSL. */
+#ifdef COMPAT_NON_TLS
+        {
+            LOCK(cs_vNonTLSNodesOutbound);
+        
+            NODE_ADDR nodeAddr(addrConnect.ToStringIP());
+        
+            bool bUseTLS = (find(vNonTLSNodesOutbound.begin(),
+                                 vNonTLSNodesOutbound.end(),
+                                 nodeAddr) == vNonTLSNodesOutbound.end());
+            if (bUseTLS)
+            {
+                ssl = tlsmanager.connect(hSocket, addrConnect);
+                if (!ssl)
+                {
+                    // Further reconnection will be made in non-TLS (unencrypted) mode
+                    vNonTLSNodesOutbound.push_back(NODE_ADDR(addrConnect.ToStringIP(), GetTimeMillis()));
+                    CloseSocket(hSocket);
+                    return NULL;
+                }
+            }
+            else
+            {
+                LogPrintf ("Connection to %s will be unencrypted\n", addrConnect.ToString());
+        
+                vNonTLSNodesOutbound.erase(
+                        remove(
+                                vNonTLSNodesOutbound.begin(),
+                                vNonTLSNodesOutbound.end(),
+                                nodeAddr),
+                        vNonTLSNodesOutbound.end());
+            }
+        }
+#else
+        ssl = TLSManager::connect(hSocket, addrConnect);
+        if(!ssl)
+        {
+            CloseSocket(hSocket);
+            return NULL;
+        }
+#endif  // COMPAT_NON_TLS
+    
+        if (GetBoolArg("-tlsvalidate", false))
+        {
+            if (ssl && !ValidatePeerCertificate(ssl))
+            {
+                LogPrintf ("TLS: ERROR: Wrong server certificate from %s. Connection will be closed.\n", addrConnect.ToString());
+        
+                SSL_shutdown(ssl);
+                CloseSocket(hSocket);
+                SSL_free(ssl);
+                return NULL;
+            }
+        }
+#endif  // USE_TLS
+
         // Add node
-        CNode* pnode = new CNode(hSocket, addrConnect, pszDest ? pszDest : "", false);
+        CNode* pnode = new CNode(hSocket, addrConnect, pszDest ? pszDest : "", false, ssl);
         pnode->AddRef();
 
         {
@@ -409,10 +499,32 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
 void CNode::CloseSocketDisconnect()
 {
     fDisconnect = true;
-    if (hSocket != INVALID_SOCKET)
+    
     {
-        LogPrint("net", "disconnecting peer=%d\n", id);
-        CloseSocket(hSocket);
+        LOCK(cs_hSocket);
+        
+        if (hSocket != INVALID_SOCKET)
+        {
+            try
+            {
+                LogPrint("net", "disconnecting peer=%d\n", id);
+            }
+            catch(std::bad_alloc&)
+            {
+                // when the node is shutting down, the call above might use invalid memory resulting in a 
+                // std::bad_alloc exception when instantiating internal objs for handling log category
+                LogPrintf("(node is probably shutting down) disconnecting peer=%d\n", id);
+            }
+        
+            if (ssl)
+            {
+
+                tlsmanager.waitFor(SSL_SHUTDOWN, hSocket, ssl, (DEFAULT_CONNECT_TIMEOUT / 1000));
+                SSL_free(ssl);
+                ssl = NULL;
+            }
+            CloseSocket(hSocket);
+        }
     }
 
     // in case this fails, we'll empty the recv buffer when the CNode is deleted
@@ -570,6 +682,13 @@ void CNode::copyStats(CNodeStats &stats)
 
     // Leave string empty if addrLocal invalid (not filled in yet)
     stats.addrLocal = addrLocal.IsValid() ? addrLocal.ToString() : "";
+
+    // If ssl != NULL it means TLS connection was established successfully
+    {
+        LOCK(cs_hSocket);
+        stats.fTLSEstablished = (ssl != NULL) && (SSL_get_state(ssl) == TLS_ST_OK);
+        stats.fTLSVerified = (ssl != NULL) && ValidatePeerCertificate(ssl);
+    }
 }
 #undef X
 
@@ -672,39 +791,92 @@ void SocketSendData(CNode *pnode)
 {
     std::deque<CSerializeData>::iterator it = pnode->vSendMsg.begin();
 
-    while (it != pnode->vSendMsg.end()) {
+    while (it != pnode->vSendMsg.end())
+    {
         const CSerializeData &data = *it;
         assert(data.size() > pnode->nSendOffset);
-        int nBytes = send(pnode->hSocket, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (nBytes > 0) {
+
+        bool bIsSSL = false;
+        int nBytes = 0, nRet = 0;
+        {
+            LOCK(pnode->cs_hSocket);
+            
+            if (pnode->hSocket == INVALID_SOCKET)
+            {
+                LogPrint("net", "Send: connection with %s is already closed\n", pnode->addr.ToString());
+                break;
+            }
+    
+            bIsSSL = (pnode->ssl != NULL);
+            
+            if (bIsSSL)
+            {
+                ERR_clear_error(); // clear the error queue, otherwise we may be reading an old error that occurred previously in the current thread
+                nBytes = SSL_write(pnode->ssl, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset);
+                nRet = SSL_get_error(pnode->ssl, nBytes);
+            }
+            else
+            {
+                nBytes = send(pnode->hSocket, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
+                nRet = WSAGetLastError();
+            }
+        }
+        if (nBytes > 0)
+        {
             pnode->nLastSend = GetTime();
             pnode->nSendBytes += nBytes;
             pnode->nSendOffset += nBytes;
             pnode->RecordBytesSent(nBytes);
-            if (pnode->nSendOffset == data.size()) {
+
+            if (pnode->nSendOffset == data.size())
+            {
                 pnode->nSendOffset = 0;
                 pnode->nSendSize -= data.size();
                 it++;
-            } else {
+            }
+            else
+            {
                 // could not send full message; stop sending more
                 break;
             }
-        } else {
-            if (nBytes < 0) {
+        }
+        else
+        {
+            if (nBytes <= 0)
+            {
                 // error
-                int nErr = WSAGetLastError();
-                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
+                //
+                if (bIsSSL)
                 {
-                    LogPrintf("socket send error %s\n", NetworkErrorString(nErr));
-                    pnode->CloseSocketDisconnect();
+                    if (nRet != SSL_ERROR_WANT_READ && nRet != SSL_ERROR_WANT_WRITE)
+                    {
+                        LogPrintf("ERROR: SSL_write %s; closing connection\n", ERR_error_string(nRet, NULL));
+                        pnode->CloseSocketDisconnect();
+                    }
+                    else
+                    {
+                        // preventive measure from exhausting CPU usage
+                        //
+                        MilliSleep(1);    // 1 msec
+                    }
+                }
+                else
+                {
+                    if (nRet != WSAEWOULDBLOCK && nRet != WSAEMSGSIZE && nRet != WSAEINTR && nRet != WSAEINPROGRESS)
+                    {
+                        LogPrintf("ERROR: send %s; closing connection\n", NetworkErrorString(nRet));
+                        pnode->CloseSocketDisconnect();
+                    }
                 }
             }
+
             // couldn't send anything at all
             break;
         }
     }
 
-    if (it == pnode->vSendMsg.end()) {
+    if (it == pnode->vSendMsg.end())
+    {
         assert(pnode->nSendOffset == 0);
         assert(pnode->nSendSize == 0);
     }
@@ -867,6 +1039,7 @@ static bool AttemptToEvictConnection(bool fPreferNewConnection) {
     return true;
 }
 
+
 static void AcceptConnection(const ListenSocket& hListenSocket) {
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
@@ -928,17 +1101,92 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     setsockopt(hSocket, IPPROTO_TCP, TCP_NODELAY, (void*)&set, sizeof(int));
 #endif
 
-    CNode* pnode = new CNode(hSocket, addr, "", true);
+
+    SSL *ssl = NULL;
+    
+    SetSocketNonBlocking(hSocket, true);
+    
+#ifdef USE_TLS
+    /* TCP connection is ready. Do server side SSL. */
+#ifdef COMPAT_NON_TLS
+    {
+        LOCK(cs_vNonTLSNodesInbound);
+    
+        NODE_ADDR nodeAddr(addr.ToStringIP());
+        
+        bool bUseTLS = (find(vNonTLSNodesInbound.begin(),
+                             vNonTLSNodesInbound.end(),
+                             nodeAddr) == vNonTLSNodesInbound.end());
+        if (bUseTLS)
+        {
+            ssl = tlsmanager.accept( hSocket, addr);
+            if(!ssl)
+            {
+                // Further reconnection will be made in non-TLS (unencrypted) mode
+                vNonTLSNodesInbound.push_back(NODE_ADDR(addr.ToStringIP(), GetTimeMillis()));
+                CloseSocket(hSocket);
+                return;
+            }
+        }
+        else
+        {
+            LogPrintf ("TLS: Connection from %s will be unencrypted\n", addr.ToString());
+            
+            vNonTLSNodesInbound.erase(
+                    remove(
+                            vNonTLSNodesInbound.begin(),
+                            vNonTLSNodesInbound.end(),
+                            nodeAddr
+                    ),
+                    vNonTLSNodesInbound.end());
+        }
+    }
+#else
+    ssl = TLSManager::accept( hSocket, addr);
+    if(!ssl)
+    {
+        CloseSocket(hSocket);
+        return;
+    }
+#endif // COMPAT_NON_TLS
+    
+    if (GetBoolArg("-tlsvalidate", false))
+    {
+        if (ssl && !ValidatePeerCertificate(ssl))
+        {
+            LogPrintf ("TLS: ERROR: Wrong client certificate from %s. Connection will be closed.\n", addr.ToString());
+        
+            SSL_shutdown(ssl);
+            CloseSocket(hSocket);
+            SSL_free(ssl);
+            return;
+        }
+    }
+#endif // USE_TLS
+
+    CNode* pnode = new CNode(hSocket, addr, "", true, ssl);
     pnode->AddRef();
     pnode->fWhitelisted = whitelisted;
-
-    LogPrint("net", "connection from %s accepted\n", addr.ToString());
 
     {
         LOCK(cs_vNodes);
         vNodes.push_back(pnode);
     }
 }
+
+#if defined(USE_TLS) && defined(COMPAT_NON_TLS)
+void ThreadNonTLSPoolsCleaner()
+{
+    while (true)
+    {
+        tlsmanager.cleanNonTLSPool(vNonTLSNodesInbound,  cs_vNonTLSNodesInbound);
+        tlsmanager.cleanNonTLSPool(vNonTLSNodesOutbound, cs_vNonTLSNodesOutbound);
+        MilliSleep(DEFAULT_CONNECT_TIMEOUT);  // sleep and sleep_for are interruption points, which will throw boost::thread_interrupted
+    }
+}
+
+#endif // USE_TLS && COMPAT_NON_TLS
+
 
 void ThreadSocketHandler()
 {
@@ -1034,8 +1282,11 @@ void ThreadSocketHandler()
             LOCK(cs_vNodes);
             BOOST_FOREACH(CNode* pnode, vNodes)
             {
+                LOCK(pnode->cs_hSocket);
+                
                 if (pnode->hSocket == INVALID_SOCKET)
                     continue;
+                
                 FD_SET(pnode->hSocket, &fdsetError);
                 hSocketMax = max(hSocketMax, pnode->hSocket);
                 have_fds = true;
@@ -1055,6 +1306,7 @@ void ThreadSocketHandler()
                 // * We send some data.
                 // * We wait for data to be received (and disconnect after timeout).
                 // * We process a message in the buffer (message handler thread).
+
                 {
                     TRY_LOCK(pnode->cs_vSend, lockSend);
                     if (lockSend && !pnode->vSendMsg.empty()) {
@@ -1115,60 +1367,8 @@ void ThreadSocketHandler()
         {
             boost::this_thread::interruption_point();
 
-            //
-            // Receive
-            //
-            if (pnode->hSocket == INVALID_SOCKET)
+            if (tlsmanager.threadSocketHandler(pnode,fdsetRecv,fdsetSend,fdsetError)==-1){
                 continue;
-            if (FD_ISSET(pnode->hSocket, &fdsetRecv) || FD_ISSET(pnode->hSocket, &fdsetError))
-            {
-                TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
-                if (lockRecv)
-                {
-                    {
-                        // typical socket buffer is 8K-64K
-                        char pchBuf[0x10000];
-                        int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
-                        if (nBytes > 0)
-                        {
-                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes))
-                                pnode->CloseSocketDisconnect();
-                            pnode->nLastRecv = GetTime();
-                            pnode->nRecvBytes += nBytes;
-                            pnode->RecordBytesRecv(nBytes);
-                        }
-                        else if (nBytes == 0)
-                        {
-                            // socket closed gracefully
-                            if (!pnode->fDisconnect)
-                                LogPrint("net", "socket closed\n");
-                            pnode->CloseSocketDisconnect();
-                        }
-                        else if (nBytes < 0)
-                        {
-                            // error
-                            int nErr = WSAGetLastError();
-                            if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
-                            {
-                                if (!pnode->fDisconnect)
-                                    LogPrintf("socket recv error %s\n", NetworkErrorString(nErr));
-                                pnode->CloseSocketDisconnect();
-                            }
-                        }
-                    }
-                }
-            }
-
-            //
-            // Send
-            //
-            if (pnode->hSocket == INVALID_SOCKET)
-                continue;
-            if (FD_ISSET(pnode->hSocket, &fdsetSend))
-            {
-                TRY_LOCK(pnode->cs_vSend, lockSend);
-                if (lockSend)
-                    SocketSendData(pnode);
             }
 
             //
@@ -1303,6 +1503,7 @@ void ThreadOpenConnections()
             {
                 CAddress addr;
                 OpenNetworkConnection(addr, NULL, strAddr.c_str());
+                
                 for (int i = 0; i < 10 && i < nLoop; i++)
                 {
                     MilliSleep(500);
@@ -1475,9 +1676,32 @@ bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOu
             return false;
     } else if (FindNode(std::string(pszDest)))
         return false;
-
+    
     CNode* pnode = ConnectNode(addrConnect, pszDest);
     boost::this_thread::interruption_point();
+    
+#if defined(USE_TLS) && defined(COMPAT_NON_TLS)
+    
+    if (!pnode)
+    {
+        string strDest;
+        int port;
+    
+        if (!pszDest)
+            strDest = addrConnect.ToStringIP();
+        else
+            SplitHostPort(string(pszDest), port, strDest);
+    
+        if (tlsmanager.isNonTLSAddr(strDest, vNonTLSNodesOutbound, cs_vNonTLSNodesOutbound))
+        {
+            // Attempt to reconnect in non-TLS mode
+            pnode = ConnectNode(addrConnect, pszDest);
+            boost::this_thread::interruption_point();
+        }
+    }
+    
+#endif
+
 
     if (!pnode)
         return false;
@@ -1572,6 +1796,7 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
     // Create socket for listening for incoming connections
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
+
     if (!addrBind.GetSockAddr((struct sockaddr*)&sockaddr, &len))
     {
         strError = strprintf("Error: Bind address family for %s not supported", addrBind.ToString());
@@ -1593,7 +1818,6 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
         return false;
     }
 
-
 #ifndef WIN32
 #ifdef SO_NOSIGPIPE
     // Different way of disabling SIGPIPE on BSD
@@ -1610,6 +1834,11 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
 #endif
 
     // Set to non-blocking, incoming connections will also inherit this
+    //
+    // WARNING!
+    // On Linux, the new socket returned by accept() does not inherit file
+    // status flags such as O_NONBLOCK and O_ASYNC from the listening
+    // socket. http://man7.org/linux/man-pages/man2/accept.2.html
     if (!SetSocketNonBlocking(hListenSocket, true)) {
         strError = strprintf("BindListenPort: Setting listening socket to non-blocking failed, error %s\n", NetworkErrorString(WSAGetLastError()));
         LogPrintf("%s\n", strError);
@@ -1636,7 +1865,7 @@ bool BindListenPort(const CService &addrBind, string& strError, bool fWhiteliste
     {
         int nErr = WSAGetLastError();
         if (nErr == WSAEADDRINUSE)
-            strError = strprintf(_("Unable to bind to %s on this computer. Zcash is probably already running."), addrBind.ToString());
+            strError = strprintf(_("Unable to bind to %s on this computer. Horizen is probably already running."), addrBind.ToString());
         else
             strError = strprintf(_("Unable to bind to %s on this computer (bind returned error %s)"), addrBind.ToString(), NetworkErrorString(nErr));
         LogPrintf("%s\n", strError);
@@ -1713,6 +1942,8 @@ void static Discover(boost::thread_group& threadGroup)
 #endif
 }
 
+
+
 void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
 {
     uiInterface.InitMessage(_("Loading addresses..."));
@@ -1738,6 +1969,23 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     Discover(threadGroup);
 
+#ifdef USE_TLS
+    
+    if (!tlsmanager.prepareCredentials())
+    {
+        LogPrintf("TLS: ERROR: %s: %s: Credentials weren't loaded. Node can't be started.\n", __FILE__, __func__);
+        return;
+    }
+    
+    if (!tlsmanager.initialize())
+    {
+        LogPrintf("TLS: ERROR: %s: %s: TLS initialization failed. Node can't be started.\n", __FILE__, __func__);
+        return;
+    }
+#else
+    LogPrintf("TLS is not used!\n");
+#endif
+
     //
     // Start threads
     //
@@ -1759,6 +2007,11 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     // Process messages
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "msghand", &ThreadMessageHandler));
 
+#if defined(USE_TLS) && defined(COMPAT_NON_TLS)
+    // Clean pools of addresses for non-TLS connections
+    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "poolscleaner", &ThreadNonTLSPoolsCleaner));
+#endif
+    
     // Dump network addresses
     scheduler.scheduleEvery(&DumpAddresses, DUMP_ADDRESSES_INTERVAL);
 }
@@ -1788,8 +2041,7 @@ public:
     {
         // Close sockets
         BOOST_FOREACH(CNode* pnode, vNodes)
-            if (pnode->hSocket != INVALID_SOCKET)
-                CloseSocket(pnode->hSocket);
+        pnode->CloseSocketDisconnect();
         BOOST_FOREACH(ListenSocket& hListenSocket, vhListenSocket)
             if (hListenSocket.socket != INVALID_SOCKET)
                 if (!CloseSocket(hListenSocket.socket))
@@ -2024,11 +2276,12 @@ bool CAddrDB::Read(CAddrMan& addr)
 unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 5*1000); }
 unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 1*1000); }
 
-CNode::CNode(SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn) :
+CNode::CNode(SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn, SSL *sslIn) :
     ssSend(SER_NETWORK, INIT_PROTO_VERSION),
     addrKnown(5000, 0.001),
     setInventoryKnown(SendBufferSize() / 1000)
 {
+    ssl = sslIn;
     nServices = 0;
     hSocket = hSocketIn;
     nRecvVersion = INIT_PROTO_VERSION;
@@ -2083,7 +2336,21 @@ CNode::CNode(SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNa
 
 CNode::~CNode()
 {
-    CloseSocket(hSocket);
+    // No need to make a lock on cs_hSocket, because before deletion CNode object is removed from the vNodes vector, so any other thread hasn't access to it.
+    // Removal is synchronized with read and write routines, so all of them will be completed to this moment.
+    
+    if (hSocket != INVALID_SOCKET)
+    {
+        if (ssl)
+        {
+            tlsmanager.waitFor(SSL_SHUTDOWN, hSocket, ssl, (DEFAULT_CONNECT_TIMEOUT / 1000));
+            
+            SSL_free(ssl);
+            ssl = NULL;
+        }
+        
+        CloseSocket(hSocket);
+    }
 
     if (pfilter)
         delete pfilter;

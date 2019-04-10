@@ -52,7 +52,14 @@ typedef enum ScriptError_t
     /* softfork safeness */
     SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS,
 
+    /* tx replay prevention */
+    SCRIPT_ERR_CHECKBLOCKATHEIGHT,
+    SCRIPT_ERR_CHECKBLOCKATHEIGHT_UNVERIFIED,
+
+    SCRIPT_ERR_NOT_FINAL,
+
     SCRIPT_ERR_ERROR_COUNT
+
 } ScriptError;
 
 #define SCRIPT_ERR_LAST SCRIPT_ERR_ERROR_COUNT

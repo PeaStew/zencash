@@ -39,6 +39,8 @@ from .equihash import (
     zcash_person,
 )
 
+from util import hex_str_to_bytes, bytes_to_hex_str
+
 BIP0031_VERSION = 60000
 MY_VERSION = 170002  # past bip-31 for ping/pong
 MY_SUBVERSION = "/python-mininode-tester:0.0.1/"
@@ -242,6 +244,15 @@ def ser_int_vector(l):
     return r
 
 
+
+# Deserialize from a hex string representation (eg from RPC)
+def FromHex(obj, hex_string):
+    obj.deserialize(BytesIO(hex_str_to_bytes(hex_string)))
+    return obj
+
+# Convert a binary-serializable object to hex (eg for submission via RPC)
+def ToHex(obj):
+    return bytes_to_hex_str(obj.serialize())
 def deser_char_vector(f):
     nit = struct.unpack("<B", f.read(1))[0]
     if nit == 253:
@@ -1321,9 +1332,9 @@ class NodeConn(asyncore.dispatcher):
         "mempool": msg_mempool
     }
     MAGIC_BYTES = {
-        "mainnet": "\x24\xe9\x27\x64",   # mainnet
-        "testnet3": "\xfa\x1a\xf9\xbf",  # testnet3
-        "regtest": "\xaa\xe8\x3f\x5f"    # regtest
+        "mainnet": "\x63\x61\x73\x68",  # mainnet
+        "testnet3": "\xbf\xf2\xcd\xe6",  # testnet3
+        "regtest": "\x2f\x54\xcc\x9d"  # regtest
     }
 
     def __init__(self, dstaddr, dstport, rpc, callback, net="regtest"):
